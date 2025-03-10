@@ -1,63 +1,126 @@
 import os
-import pathlib
 import struct
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..logger import create_logger, _verbose_to_level
+from ..decorators import pickle_galfind_list
+
 class ReadFoF(object):
-    def __init__(self, basedir='/ramses2/jaehyun/HR5/FoF_Data/', num=None, hid=None):
-        self.basedir = pathlib.Path(basedir)
+    """Class to read FoF catalogue and halo/subhalo data produced by PGalF.
+
+    Parameters
+    ----------
+    basedir : str
+        Root directory where FoF output files are stored.
+    savdir : str, optional
+        Directory where catalogue pickles are saved. Defaults to `$HOME/FoF`.
+    verbose : bool or str or int
+        If True/False, set logging level to 'INFO'/'WARNING'.
+        Otherwise, one of valid logging levels
+        ('NOTSET', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+        or their numerical values (0, 10, 20, 30, 40, 50).
+        (see https://docs.python.org/3/library/logging.html#logging-levels)
+
+    Attributes
+    ----------
+    df : halo DataFrame
+        pandas DataFrame containing halo info
+    dfs : subhalo DataFrame
+        pandas DataFrame containing subhalo info
+    num : int
+        snapshot number to read
+    dtype : dict
+        numpy dtype objects for different data structures ('dm', 'star', 'bh', 'gas')
+
+    Examples
+    --------
+    >>> import pyhr as ph
+    >>> rh = ph.ReadFoF('/path/to/basedir', verbose=True)
+    >>> df, dfs = rh.get_info(num=20)
+    >>> dat, df, indices = rh.get_halo(num=20)
+    >>> dat, df = rh.get_halo_background(num=20)
+    """
+
+    @property
+    def verbose(self):
+        return self._verbose
+
+    @verbose.setter
+    def verbose(self, value):
+        if hasattr(self, 'logger'):
+            self.logger.setLevel(_verbose_to_level(value))
+        # if hasattr(self, 'ff'):
+        #     if hasattr(self, 'logger'):
+        #         self.ff.logger.setLevel(_verbose_to_level(value))
+
+        self._verbose = value
+
+    def __init__(self, basedir='/ramses2/jaehyun/HR5/FoF_Data/',
+                 num=None, savdir=None, verbose=True):
+
+        self.logger = create_logger(self.__class__.__name__.split('.')[-1],
+                                    verbose)
+
+        self.basedir = Path(basedir)
+        if savdir is None:
+            self.savdir = Path.home() / 'FoF'
+        else:
+            self.savdir = Path(savdir)
+
+        # self.savdir = basedir.expanduser()
         self.fname_base = dict()
         self.fname_base['list'] = r'FoF.{0:s}/GALCATALOG.LIST.{0:s}'
         self.fname_base['data'] = r'FoF.{0:s}/GALFIND.DATA.{0:s}'
         self.fname_base['data_bg'] = r'FoF.{0:s}/background_ptl.{0:s}'
 
         self.num = num
-        self.hid = hid
         self.kind = ['dm', 'star', 'bh', 'gas']
 
-        # fname = self.basedir / fname_base['list']
         self.dtype, self.size = self._get_dtype_and_size()
         if self.num is not None:
-            self.get_info(self.num)
+            df, dfs = self.get_info(num=self.num)
 
-    def get_info(self, num=None):
+    @pickle_galfind_list
+    def get_info(self, num=None, force_override=False):
         if num is None:
-            num = self.num
-        elif num != self.num:
+            if self.num is None:
+                self.logger.error('Set snapshot number!')
+            else:
+                num = self.num
+        else:
             self.num = num
 
         fname = self.basedir / self.fname_base['list'].format(str(num).zfill(5))
-        print('Read nhalo')
+        self.logger.info('Reading info')
         self.nhalo, self.nsub = self.read_catalogue(fname)
-        print('Read halos')
-        halos, subhalos, offsets = self.read_catalogue(fname, self.nhalo, self.nsub, nhalo_only=False)
-        print('Converting to DataFrame')
-        # pandas DataFrame containing halo and subhalo info
+        halos, subhalos, offsets = self.read_catalogue(fname, self.nhalo,
+                                                       self.nsub, nhalo_only=False)
+
+        # pandas dataframes containing halo and subhalo info
         df = pd.DataFrame(halos)
         dfs = pd.DataFrame(subhalos)
+
+        # Add supplementary information
         df['offsets'] = offsets
         df['size'] = df['ndm']*self.size['dm'] + df['nstar']*self.size['star'] +\
                      df['nbh']*self.size['bh'] + df['ngas']*self.size['gas']
         dfs['size'] = dfs['ndm']*self.size['dm'] + dfs['nstar']*self.size['star'] +\
                       dfs['nbh']*self.size['bh'] + dfs['ngas']*self.size['gas']
 
-        # Use numpy.add.reduceat for efficient summation
         indices = np.concatenate(([0], np.cumsum(df['nsub'][:-1])))
         for k in self.kind:
             df[f'n{k}_sb'] = pd.Series(np.add.reduceat(dfs[f'n{k}'].values, indices))
             df[f'n{k}_bg'] = df[f'n{k}'] - df[f'n{k}_sb']
 
-        # df['n_bg'] = df['ndm'] - pd.Series(np.add.reduceat(dfs['ndm'].values, indices))
+        # Size in bytes
         df['size_sb'] = pd.Series(np.add.reduceat(dfs['size'].values, indices))
-        df['size_bg'] = df['size'] - df['size_sb']
+        # df['size_bg'] = df['size'] - df['size_sb']
 
         # Byte offset (self-bound)
         df['offset2'] = (df['size_sb'].cumsum()).shift(1, fill_value=0)
-        # df['offset2'] += pd.Series(range(1, len(df) + 1))*self.size['halo'] + \
-        #     df['nsub'].cumsum().shift(1, fill_value=0)*self.size['subhalo'] + \
-        #     self.size['subhalo']
-        df['offset2'] += pd.Series(range(0, len(df)))*self.size['halo'] + \
+        df['offset2'] += pd.Series(range(0, len(df)))*self.size['halo'] +\
             df['nsub'].cumsum().shift(1, fill_value=0)*self.size['subhalo']
 
         # Byte offset (unbound)
@@ -68,7 +131,7 @@ class ReadFoF(object):
         df['sid_start'] = df['nsub'].cumsum().shift(1, fill_value=0)
 
         # Reindex
-        cols_to_move = ['nsub', 'sid_start', 'size', 'size_sb', 'size_bg', 'offset2', 'offset3']
+        cols_to_move = ['nsub']
         cols =  cols_to_move + [col for col in df.columns if col not in cols_to_move]
         df = df[cols]
 
@@ -81,54 +144,48 @@ class ReadFoF(object):
         """
         Read all particles/grids of subhalos and unbound components of target FoF halos.
         """
-        kind = self.kind
+        hid = np.atleast_1d(hid)
         df = self.df.loc[hid].copy()
         dfs = self.dfs
 
         dat = dict()
         nelem = dict()
         indices = dict()
-        fname = self.basedir / self.fname_base['data_bg'].format(str(self.num).zfill(5))
+
+        fname = self.basedir / self.fname_base['data'].format(str(self.num).zfill(5))
         fp = open(fname, 'rb')
         for i in df.index:
             dat[i] = dict()
-            nelem[i] = {k: [] for k in kind}
+            nelem[i] = {k: [] for k in self.kind}
             indices[i] = dict()
-            for k in kind:
+            for k in self.kind:
                 dat[i][k] = np.zeros(df.loc[i, f'n{k}_sb'], dtype=self.dtype[k])
 
             sid0 = df.loc[i, f'sid_start']
             nsub = df.loc[i, f'nsub']
             for isub in range(nsub):
-                for k in kind:
+                for k in self.kind:
                     nelem[i][k].append(dfs.loc[sid0 + isub, f'n{k}'])
 
-            for k in kind:
+            for k in self.kind:
                 nelem[i][k] = np.array(nelem[i][k])
                 indices[i][k] = np.insert(np.cumsum(nelem[i][k]), 0, 0)
-                #print(i, k, indices[i][k])
 
-            print('hid offset: ', i, df.loc[i, 'offset2'])
             fp.seek(df.loc[i, 'offset2'], os.SEEK_SET)
-
             halo = np.frombuffer(fp.read(self.size['halo']),
                                  dtype=self.dtype['halo'], count=1)
             for isub in range(nsub):
                 subhalo = np.frombuffer(fp.read(self.size['subhalo']),
                                         dtype=self.dtype['subhalo'], count=1)
-                for k in kind:
+                for k in self.kind:
                     idx = indices[i][k]
                     count = nelem[i][k][isub]
-                    # if i == 1:
-                    #     print(f'{k} - hid isub idx0 idx1 count',
-                    #           i, isub, idx[isub], idx[isub+1], count)
                     dat[i][k][idx[isub]:idx[isub+1]] = np.frombuffer(
                         fp.read(count*self.size[k]), dtype=self.dtype[k], count=count)
 
-                # print('offset')
-                # fp.seek(self.size['subhalo'], os.SEEK_CUR)
-
         fp.close()
+
+        return dat, df, indices
 
     def get_halo_background(self, hid):
         df = self.df.loc[hid].copy()
@@ -145,7 +202,6 @@ class ReadFoF(object):
             for k in self.kind:
                 dat[i][k] = np.zeros(df.loc[i, f'n{k}_bg'], dtype=self.dtype[k])
                 count = df.loc[i, f'n{k}_bg']
-                print(i, k, count)
                 dat[i][k] = np.frombuffer(fp.read(count*self.size[k]),
                                           dtype=self.dtype[k], count=count)
 
@@ -179,8 +235,8 @@ class ReadFoF(object):
                 nsub_ = halo['nsub'].item()
                 # Record halo info and start position of subhalos
                 if not nhalo_only:
-                    subhalo_ = np.frombuffer(fp.read(nsub_*self.size['subhalo']), dtype=self.dtype['subhalo'],
-                                             count=nsub_)
+                    subhalo_ = np.frombuffer(fp.read(nsub_*self.size['subhalo']),
+                                             dtype=self.dtype['subhalo'], count=nsub_)
                     halos[nhalo] = halo
                     subhalos[nsub:nsub+nsub_] = subhalo_
                     offsets[nhalo] = offset
