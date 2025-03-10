@@ -14,6 +14,7 @@ class ReadFoF(object):
     ----------
     basedir : str
         Root directory where FoF output files are stored.
+        Defaults to the HR5 FoF root directory on KIAS grammar.
     savdir : str, optional
         Directory where catalogue pickles are saved. Defaults to `$HOME/FoF`.
     verbose : bool or str or int
@@ -94,11 +95,13 @@ class ReadFoF(object):
 
         fname = self.basedir / self.fname_base['list'].format(str(num).zfill(5))
         self.logger.info('Reading info')
+        # Read the number of halos only to allocate memory first
         self.nhalo, self.nsub = self.read_catalogue(fname)
+        # Read full catalogue
         halos, subhalos, offsets = self.read_catalogue(fname, self.nhalo,
                                                        self.nsub, nhalo_only=False)
 
-        # pandas dataframes containing halo and subhalo info
+        # Convert to pandas Dataframes containing halo and subhalo info
         df = pd.DataFrame(halos)
         dfs = pd.DataFrame(subhalos)
 
@@ -151,18 +154,21 @@ class ReadFoF(object):
         dat = dict()
         nelem = dict()
         indices = dict()
+        df_sub = dict()
 
         fname = self.basedir / self.fname_base['data'].format(str(self.num).zfill(5))
         fp = open(fname, 'rb')
         for i in df.index:
+            sid0 = df.loc[i, f'sid_start']
+            nsub = df.loc[i, f'nsub']
             dat[i] = dict()
             nelem[i] = {k: [] for k in self.kind}
             indices[i] = dict()
+            df_sub[i] = dfs.iloc[sid0: sid0+nsub]
+
             for k in self.kind:
                 dat[i][k] = np.zeros(df.loc[i, f'n{k}_sb'], dtype=self.dtype[k])
 
-            sid0 = df.loc[i, f'sid_start']
-            nsub = df.loc[i, f'nsub']
             for isub in range(nsub):
                 for k in self.kind:
                     nelem[i][k].append(dfs.loc[sid0 + isub, f'n{k}'])
@@ -172,25 +178,26 @@ class ReadFoF(object):
                 indices[i][k] = np.insert(np.cumsum(nelem[i][k]), 0, 0)
 
             fp.seek(df.loc[i, 'offset2'], os.SEEK_SET)
-            halo = np.frombuffer(fp.read(self.size['halo']),
-                                 dtype=self.dtype['halo'], count=1)
+            fp.seek(self.size['halo'], os.SEEK_CUR)
             for isub in range(nsub):
-                subhalo = np.frombuffer(fp.read(self.size['subhalo']),
-                                        dtype=self.dtype['subhalo'], count=1)
+                fp.seek(self.size['subhalo'], os.SEEK_CUR)
                 for k in self.kind:
                     idx = indices[i][k]
                     count = nelem[i][k][isub]
                     dat[i][k][idx[isub]:idx[isub+1]] = np.frombuffer(
                         fp.read(count*self.size[k]), dtype=self.dtype[k], count=count)
 
+
         fp.close()
 
-        return dat, df, indices
+        return dat, df, indices, df_sub
 
     def get_halo_background(self, hid):
+        hid = np.atleast_1d(hid)
         df = self.df.loc[hid].copy()
 
         dat = dict()
+
         fname = self.basedir / self.fname_base['data_bg'].format(
             str(self.num).zfill(5))
         fp = open(fname, 'rb')
