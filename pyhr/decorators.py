@@ -1,10 +1,9 @@
 import os
-import os.path as osp
 import functools
+
+import os.path as osp
 import pandas as pd
-import xarray as xr
 from inspect import getcallargs
-from pathlib import Path
 
 def pickle_galfind_list(func):
 
@@ -18,6 +17,8 @@ def pickle_galfind_list(func):
 
         if 'num' not in kwargs:
             kwargs['num'] = cls.num
+        else:
+            cls.num = kwargs['num']
 
         num = kwargs['num']
 
