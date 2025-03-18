@@ -8,13 +8,13 @@ from ..logger import create_logger, _verbose_to_level
 from ..decorators import pickle_galfind_list
 
 class ReadFoF(object):
-    """Class to read FoF catalogue and halo/subhalo data produced by PGalF.
+    """
+    Class to read FoF catalogue and halo/subhalo data produced by PGalF.
 
     Parameters
     ----------
     basedir : str
         Root directory where FoF output files are stored.
-        Defaults to the HR5 FoF root directory on KIAS grammar.
     savdir : str, optional
         Directory where catalogue pickles are saved. Defaults to `$HOME/FoF`.
     verbose : bool or str or int
@@ -26,30 +26,49 @@ class ReadFoF(object):
 
     Attributes
     ----------
-    df : halo DataFrame
-        pandas DataFrame containing halo info
-    dfs : subhalo DataFrame
-        pandas DataFrame containing subhalo info
+    df : pandas.DataFrame
+        DataFrame containing halo information.
+    dfs : pandas.DataFrame
+        DataFrame containing subhalo information.
     num : int
-        snapshot number to read
+        Snapshot number to read.
     dtype : dict
-        numpy dtype objects for different data structures ('dm', 'star', 'bh', 'gas')
+        Dictionary of numpy dtype objects for different data structures.
+    size : dict
+        Dictionary of sizes (in bytes) for different data structures.
 
     Examples
     --------
     >>> import pyhr as ph
     >>> rh = ph.ReadFoF('/path/to/basedir', verbose=True)
     >>> df, dfs = rh.get_info(num=20)
-    >>> dat, df, indices = rh.get_halo(num=20)
-    >>> dat, df = rh.get_halo_background(num=20)
+    >>> hid = [30, 40]
+    >>> dat, df, indices, df_sub = rh.get_halo(hid)
+    >>> dat_bg, df = rh.get_halo_background(hid)
     """
 
     @property
     def verbose(self):
+        """
+        Get the verbosity level.
+
+        Returns
+        -------
+        int
+            Current verbosity level.
+        """
         return self._verbose
 
     @verbose.setter
     def verbose(self, value):
+        """
+        Set the verbosity level.
+
+        Parameters
+        ----------
+        value : bool or str or int
+            New verbosity level.
+        """
         if hasattr(self, 'logger'):
             self.logger.setLevel(_verbose_to_level(value))
         # if hasattr(self, 'ff'):
@@ -60,7 +79,20 @@ class ReadFoF(object):
 
     def __init__(self, basedir='/ramses2/jaehyun/HR5/FoF_Data/',
                  num=None, savdir=None, verbose=True):
+        """
+        Initialize the ReadFoF class.
 
+        Parameters
+        ----------
+        basedir : str
+            Root directory where FoF output files are stored.
+        num : int, optional
+            Snapshot number to read. Defaults to None.
+        savdir : str, optional
+            Directory where catalogue pickles are saved. Defaults to `$HOME/FoF`.
+        verbose : bool or str or int
+            Logging verbosity level. Defaults to True.
+        """
         self.logger = create_logger(self.__class__.__name__.split('.')[-1],
                                     verbose)
 
@@ -85,6 +117,22 @@ class ReadFoF(object):
 
     @pickle_galfind_list
     def get_info(self, num=None, force_override=False):
+        """
+        Read halo and subhalo information from the FoF catalogue.
+
+        Parameters
+        ----------
+        num : int, optional
+            Snapshot number to read. Defaults to the instance's `num` attribute.
+        force_override : bool, optional
+            Whether to force re-reading the catalogue. Defaults to False.
+
+        Returns
+        -------
+        tuple
+            A tuple containing two pandas DataFrames: halo information (`df`) 
+            and subhalo information (`dfs`).
+        """
         if num is None:
             if self.num is None:
                 self.logger.error('Set snapshot number!')
@@ -145,7 +193,25 @@ class ReadFoF(object):
 
     def get_halo(self, hid):
         """
-        Read all particles/grids of subhalos and unbound components of target FoF halos.
+        Read all bound particles/grids of target FoF halos.
+
+        Parameters
+        ----------
+        hid : int or array-like
+            Halo ID(s) to read.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - dat : dict
+                Dictionary of particle data for each halo.
+            - df : pandas.DataFrame
+                DataFrame containing halo information.
+            - indices : dict
+                Dictionary of indices for subhalo particles.
+            - df_sub : dict
+                Dictionary of subhalo DataFrames for each halo.
         """
         hid = np.atleast_1d(hid)
         df = self.df.loc[hid].copy()
@@ -193,6 +259,23 @@ class ReadFoF(object):
         return dat, df, indices, df_sub
 
     def get_halo_background(self, hid):
+        """
+        Read unbound components of target FoF halos.
+
+        Parameters
+        ----------
+        hid : int or array-like
+            Halo ID(s) to read.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - dat : dict
+                Dictionary of unbound particle data for each halo.
+            - df : pandas.DataFrame
+                DataFrame containing halo information.
+        """
         hid = np.atleast_1d(hid)
         df = self.df.loc[hid].copy()
 
@@ -217,6 +300,32 @@ class ReadFoF(object):
         return dat, df
 
     def read_catalogue(self, fname, nhalo=None, nsub=None, nhalo_only=False):
+        """
+        Read halo and subhalo catalogue from a file.
+
+        Parameters
+        ----------
+        fname : str
+            Path to the catalogue file.
+        nhalo : int, optional
+            Number of halos to read. Defaults to None.
+        nsub : int, optional
+            Number of subhalos to read. Defaults to None.
+        nhalo_only : bool, optional
+            Whether to read only the number of halos. Defaults to False.
+
+        Returns
+        -------
+        tuple or int
+            If `nhalo_only` is False, returns a tuple containing:
+            - halos : numpy.ndarray
+                Array of halo information.
+            - subhalos : numpy.ndarray
+                Array of subhalo information.
+            - offsets : numpy.ndarray
+                Array of offsets for each halo.
+            If `nhalo_only` is True, returns the number of halos and subhalos.
+        """
         if nhalo is None:
             nhalo_only = True
 
@@ -261,10 +370,17 @@ class ReadFoF(object):
 
     def _get_dtype_and_size(self):
         """
-        For more details, see
-        https://astro.kias.re.kr/Horizon-Run5/index.php/FoF_halo/substructure_finding_data
-        """
+        Define numpy dtypes and sizes for different data structures.
 
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - dtype : dict
+                Dictionary of numpy dtype objects.
+            - size : dict
+                Dictionary of sizes (in bytes) for each data structure.
+        """
         dtype = dict()
         # Define data type
         # Halo and subhalo (GALCATALOG.LIST)
