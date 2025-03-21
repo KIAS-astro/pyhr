@@ -77,7 +77,8 @@ class ReadFoF(object):
         self.fname_base['data_bg'] = r'FoF.{0:s}/background_ptl.{0:s}'
 
         self.num = num
-        self.kind = ['dm', 'star', 'bh', 'gas']
+        # Order in which substructure data is written
+        self.kind = ['dm', 'gas', 'bh', 'star']
 
         self.dtype, self.size = self._get_dtype_and_size()
         if self.num is not None:
@@ -122,12 +123,12 @@ class ReadFoF(object):
         # df['size_bg'] = df['size'] - df['size_sb']
 
         # Byte offset (self-bound)
-        df['offset2'] = (df['size_sb'].cumsum()).shift(1, fill_value=0)
-        df['offset2'] += pd.Series(range(0, len(df)))*self.size['halo'] +\
+        df['offset_sb'] = (df['size_sb'].cumsum()).shift(1, fill_value=0)
+        df['offset_sb'] += pd.Series(range(0, len(df)))*self.size['halo'] +\
             df['nsub'].cumsum().shift(1, fill_value=0)*self.size['subhalo']
 
         # Byte offset (unbound)
-        df['offset3'] = pd.Series(range(0, len(df)))*self.size['halo'] +\
+        df['offset_bg'] = pd.Series(range(0, len(df)))*self.size['halo'] +\
             ((df['size'] - df['size_sb']).cumsum()).shift(1, fill_value=0)
 
         # Starting subhalo id
@@ -177,7 +178,7 @@ class ReadFoF(object):
                 nelem[i][k] = np.array(nelem[i][k])
                 indices[i][k] = np.insert(np.cumsum(nelem[i][k]), 0, 0)
 
-            fp.seek(df.loc[i, 'offset2'], os.SEEK_SET)
+            fp.seek(df.loc[i, 'offset_sb'], os.SEEK_SET)
             fp.seek(self.size['halo'], os.SEEK_CUR)
             for isub in range(nsub):
                 fp.seek(self.size['subhalo'], os.SEEK_CUR)
@@ -186,7 +187,6 @@ class ReadFoF(object):
                     count = nelem[i][k][isub]
                     dat[i][k][idx[isub]:idx[isub+1]] = np.frombuffer(
                         fp.read(count*self.size[k]), dtype=self.dtype[k], count=count)
-
 
         fp.close()
 
@@ -203,7 +203,7 @@ class ReadFoF(object):
         fp = open(fname, 'rb')
         for i in df.index:
             dat[i] = dict()
-            fp.seek(df.loc[i, 'offset3'], os.SEEK_SET)
+            fp.seek(df.loc[i, 'offset_bg'], os.SEEK_SET)
             subhalo = np.frombuffer(fp.read(self.size['subhalo']),
                                     dtype=self.dtype['subhalo'], count=1)
             for k in self.kind:
@@ -288,7 +288,7 @@ class ReadFoF(object):
                                 ('mass', 'f8'), ('dum0', 'f8'), ('tp', 'f8'),
                                 ('zp', 'f8'), ('mass0', 'f8'), ('tpp', 'f8'),
                                 ('indtab', 'f8'), ('id', 'i8'), ('potential', 'f8'),
-                                ('level', 'i4'), ('dum1', 'i4')])
+                                ('level', 'i4'), ('dum1', 'f4')])
 
         dtype['star'] = dtype['dm']
 
